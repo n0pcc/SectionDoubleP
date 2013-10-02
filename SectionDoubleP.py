@@ -106,7 +106,9 @@ class SectionDoubleP:
             
             # Stripping the data of the section from the file.
             if self.pe.sections[-1].SizeOfRawData != 0:
-                self.pe.__data__ = self.pe.__data__[:-self.pe.sections[-1].SizeOfRawData]
+                self.pe.__data__ = (self.pe.__data__[:self.pe.sections[-1].PointerToRawData] + \
+                                    self.pe.__data__[self.pe.sections[-1].PointerToRawData + \
+                                                        self.pe.sections[-1].SizeOfRawData:])
             
             # Overwriting the section header in the binary with nulls.
             # Getting the address of the section table and manually overwriting
@@ -214,7 +216,8 @@ class SectionDoubleP:
             
             # Appending the data of the new section to the file.
             if len(Data) > 0:
-                self.pe.__data__ = self.pe.__data__[:] + Data
+                self.pe.__data__ = (self.pe.__data__[:RawAddress] + Data + \
+                                    self.pe.__data__[RawAddress:])
             
             section_offset = section_table_offset + self.pe.FILE_HEADER.NumberOfSections*0x28
             

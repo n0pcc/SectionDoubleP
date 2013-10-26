@@ -215,7 +215,7 @@ class SectionDoubleP:
                         (self.pe.FILE_HEADER.NumberOfSections)*0x28, 0x28))):
                 
                 # Checking if more space can be added.
-                if self.pe.OPTIONAL_HEADER.SizeOfHeaders < 0x1000:
+                if self.pe.OPTIONAL_HEADER.SizeOfHeaders < self.pe.sections[0].VirtualAddress:
                     
                     self.__add_header_space()
                     print "Additional space to add a new section header was allocated."

@@ -1,4 +1,4 @@
-""" Tested with pefile 1.2.10 on 32bit PE executable files.
+""" Tested with pefile 1.2.10-123 on 32bit PE executable files.
     
     An implementation to push or pop a section header to the section table of a PE file.
     For further information refer to the docstrings of pop_back/push_back.
@@ -56,33 +56,51 @@ class SectionDoubleP:
         
         # Adding the null buffer.
         self.pe.__data__ = (self.pe.__data__[:SizeOfHeaders] + data + 
-                            self.pe.__data__[SizeOfHeaders + len(data):])
+                            self.pe.__data__[SizeOfHeaders:])
         
         section_table_offset = (self.pe.DOS_HEADER.e_lfanew + 4 + 
                         self.pe.FILE_HEADER.sizeof() + self.pe.FILE_HEADER.SizeOfOptionalHeader)
         
         # Copying the data between the last section header and SizeOfHeaders to the newly allocated
         # space.
-        offset_new_section = section_table_offset + self.pe.FILE_HEADER.NumberOfSections*0x28
-        size = SizeOfHeaders - offset_new_section
-        data = self.pe.get_data(offset_new_section, size)
-        self.pe.set_bytes_at_offset(offset_new_section + FileAlignment, data)
+        new_section_offset = section_table_offset + self.pe.FILE_HEADER.NumberOfSections*0x28
+        size = SizeOfHeaders - new_section_offset
+        data = self.pe.get_data(new_section_offset, size)
+        self.pe.set_bytes_at_offset(new_section_offset + FileAlignment, data)
+        
+        # Filling the space, from which the data was copied from, with NULLs.
+        self.pe.set_bytes_at_offset(new_section_offset, '\x00' * FileAlignment)
+        
+        data_directory_offset = section_table_offset - self.pe.OPTIONAL_HEADER.NumberOfRvaAndSizes * 0x8
         
         # Checking data directories if anything points to the space between the last section header
         # and the former SizeOfHeaders. If that's the case the pointer is increased by FileAlignment.
-        for dir in self.pe.OPTIONAL_HEADER.DATA_DIRECTORY:
-            if offset_new_section < dir.VirtualAddress and dir.VirtualAddress < SizeOfHeaders:
-                dir.VirtualAddress += FileAlignment
+        for data_offset in xrange(data_directory_offset, section_table_offset, 0x8):
+            data_rva = self.pe.get_dword_from_offset(data_offset)
+            
+            if new_section_offset <= data_rva and data_rva < SizeOfHeaders:
+                self.pe.set_dword_at_offset(data_offset, data_rva + FileAlignment)
         
-        self.pe.OPTIONAL_HEADER.SizeOfHeaders += FileAlignment
+        SizeOfHeaders_offset = (self.pe.DOS_HEADER.e_lfanew + 4 + 
+                        self.pe.FILE_HEADER.sizeof() + 0x3C)
+        
+        # Adjusting the SizeOfHeaders value.
+        self.pe.set_dword_at_offset(SizeOfHeaders_offset, SizeOfHeaders + FileAlignment)
+        
+        section_raw_address_offset = section_table_offset + 0x14
         
         # The raw addresses of the sections are adjusted.
-        section_raw_address = section_table_offset + 0x14
         for section in self.pe.sections:
-            self.pe.set_dword_at_offset(section_raw_address, section.PointerToRawData+FileAlignment)
-            section_raw_address += 0x28
+            if section.PointerToRawData != 0:
+                self.pe.set_dword_at_offset(section_raw_address_offset, section.PointerToRawData+FileAlignment)
+            
+            section_raw_address_offset += 0x28
         
-        self.pe.parse_sections(section_table_offset)
+        # All changes in this method were made to the raw data (__data__). To make these changes
+        # accessbile in self.pe __data__ has to be parsed again. Since a new pefile is parsed during
+        # the init method, the easiest way is to replace self.pe with a new pefile based on __data__
+        # of the old self.pe.
+        self.pe = pefile.PE(data=self.pe.__data__)
     
     def __is_null_data(self, data):
         """ Checks if the given data contains just null bytes.
@@ -243,6 +261,8 @@ class SectionDoubleP:
         else:
             raise SectionDoublePError("The NumberOfSections specified in the file header and the " +
                 "size of the sections list of pefile don't match.")
+        
+        return self.pe
 
 def print_section_info(pe):
     for section in pe.sections:
@@ -273,8 +293,8 @@ def main(argv):
     
     try:
         # Characteristics: Executable as code, Readable, Contains executable code
-        sections.push_back(Characteristics=0x60000020, Data=data)
-        sections.push_back(Characteristics=0x60000020, Data=data)
+        pe = sections.push_back(Characteristics=0x60000020, Data=data)
+        pe = sections.push_back(Characteristics=0x60000020, Data=data)
     except SectionDoublePError as e:
         print e
     

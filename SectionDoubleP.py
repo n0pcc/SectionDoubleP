@@ -1,4 +1,4 @@
-""" Tested with pefile 1.2.10-123 on 32bit PE executable files.
+""" Tested with pefile 2024.8.26 and Python 3 on 32bit PE executable files.
     
     An implementation to push or pop a section header to the section table of a PE file.
     For further information refer to the docstrings of pop_back/push_back.
@@ -6,7 +6,7 @@
     by n0p
 """
 
-import pefile, pydasm, sys
+import pefile, capstone, sys
 
 class SectionDoublePError(Exception):
     pass
@@ -52,7 +52,7 @@ class SectionDoubleP:
         FileAlignment = self.pe.OPTIONAL_HEADER.FileAlignment
         SizeOfHeaders = self.pe.OPTIONAL_HEADER.SizeOfHeaders
         
-        data = '\x00' * FileAlignment
+        data = b'\x00' * FileAlignment
         
         # Adding the null buffer.
         self.pe.__data__ = (self.pe.__data__[:SizeOfHeaders] + data + 
@@ -69,13 +69,13 @@ class SectionDoubleP:
         self.pe.set_bytes_at_offset(new_section_offset + FileAlignment, data)
         
         # Filling the space, from which the data was copied from, with NULLs.
-        self.pe.set_bytes_at_offset(new_section_offset, '\x00' * FileAlignment)
+        self.pe.set_bytes_at_offset(new_section_offset, b'\x00' * FileAlignment)
         
         data_directory_offset = section_table_offset - self.pe.OPTIONAL_HEADER.NumberOfRvaAndSizes * 0x8
         
         # Checking data directories if anything points to the space between the last section header
         # and the former SizeOfHeaders. If that's the case the pointer is increased by FileAlignment.
-        for data_offset in xrange(data_directory_offset, section_table_offset, 0x8):
+        for data_offset in range(data_directory_offset, section_table_offset, 0x8):
             data_rva = self.pe.get_dword_from_offset(data_offset)
             
             if new_section_offset <= data_rva and data_rva < SizeOfHeaders:
@@ -106,8 +106,8 @@ class SectionDoubleP:
         """ Checks if the given data contains just null bytes.
         """
         
-        for char in data:
-            if char != '\x00':
+        for byte in data:
+            if byte != 0x00:
                 return False
         return True
     
@@ -131,7 +131,7 @@ class SectionDoubleP:
             # Overwriting the section header in the binary with nulls.
             # Getting the address of the section table and manually overwriting
             # the header with nulls unfortunally didn't work out.
-            self.pe.sections[-1].Name = '\x00'*8
+            self.pe.sections[-1].Name = b'\x00'*8
             self.pe.sections[-1].Misc_VirtualSize = 0x00000000
             self.pe.sections[-1].VirtualAddress = 0x00000000
             self.pe.sections[-1].SizeOfRawData = 0x00000000
@@ -150,10 +150,10 @@ class SectionDoubleP:
         else:
             raise SectionDoublePError("There's no section to pop.")
     
-    def push_back(self, Name=".NewSec", VirtualSize=0x00000000, VirtualAddress=0x00000000, 
+    def push_back(self, Name=b".NewSec", VirtualSize=0x00000000, VirtualAddress=0x00000000, 
                 RawSize=0x00000000, RawAddress=0x00000000, RelocAddress=0x00000000, 
                 Linenumbers=0x00000000, RelocationsNumber=0x0000, LinenumbersNumber=0x0000,
-                Characteristics=0xE00000E0, Data=""):
+                Characteristics=0xE00000E0, Data=b""):
         """ Adds the section, specified by the functions parameters, at the end of the section
             table.
             If the space to add an additional section header is insufficient, a buffer is inserted
@@ -165,6 +165,8 @@ class SectionDoubleP:
             
             If a RawSize > 0 is set or Data is given the data gets aligned to the FileAlignment and
             is attached at the end of the file.
+            
+            Name and Data have to be bytes.
         """
         
         if self.pe.FILE_HEADER.NumberOfSections == len(self.pe.sections):
@@ -192,12 +194,12 @@ class SectionDoubleP:
             
             if (len(Data) % FileAlignment) != 0:
                 # Padding the data of the section.
-                Data += '\x00' * (FileAlignment - (len(Data) % FileAlignment))
+                Data += b'\x00' * (FileAlignment - (len(Data) % FileAlignment))
             
             if RawSize != len(Data):
                 if (    RawSize > len(Data)
                     and (RawSize % FileAlignment) == 0):
-                    Data += '\x00' * (RawSize - (len(Data) % RawSize))
+                    Data += b'\x00' * (RawSize - (len(Data) % RawSize))
                 else:
                     RawSize = len(Data)
             
@@ -218,7 +220,7 @@ class SectionDoubleP:
                 if self.pe.OPTIONAL_HEADER.SizeOfHeaders < self.pe.sections[0].VirtualAddress:
                     
                     self.__add_header_space()
-                    print "Additional space to add a new section header was allocated."
+                    print("Additional space to add a new section header was allocated.")
                 else:
                     raise SectionDoublePError("No more space can be added for the section header.")
             
@@ -266,19 +268,17 @@ class SectionDoubleP:
 
 def print_section_info(pe):
     for section in pe.sections:
-        print section
+        print(section)
     
-    # If you don't have pydasm installed comment the rest of the function out.
-    print "The instructions at the beginning of the last section:"
+    # If you don't have capstone installed comment the rest of the function out.
+    print("The instructions at the beginning of the last section:")
     
     ep = pe.sections[-1].VirtualAddress
     ep_ava = ep+pe.OPTIONAL_HEADER.ImageBase
     data = pe.get_memory_mapped_image()[ep:ep+6]
-    offset = 0
-    while offset < len(data):
-        i = pydasm.get_instruction(data[offset:], pydasm.MODE_32)
-        print pydasm.get_instruction_string(i, pydasm.FORMAT_INTEL, ep_ava+offset)
-        offset += i.length
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    for i in md.disasm(data, ep_ava):
+        print(("%s %s" % (i.mnemonic, i.op_str)).strip())
 
 def main(argv):
     pe =  pefile.PE("putty.exe")
@@ -289,24 +289,24 @@ def main(argv):
     # NOP
     # 0x0044C4DF is the entry point of putty.exe (at least of my version) when it's mapped at
     # 0x00400000.
-    data="\xE9\xDA\xF4\xFC\xFF\x90"
+    data=b"\xE9\xDA\xF4\xFC\xFF\x90"
     
     try:
         # Characteristics: Executable as code, Readable, Contains executable code
         pe = sections.push_back(Characteristics=0x60000020, Data=data)
         pe = sections.push_back(Characteristics=0x60000020, Data=data)
     except SectionDoublePError as e:
-        print e
+        print(e)
     
-    print "Information on every section after two sections have been added:"
+    print("Information on every section after two sections have been added:")
     print_section_info(pe)
     
     try:
         sections.pop_back()
     except SectionDoublePError as e:
-        print e
+        print(e)
     
-    print "\nInformation on every section after one of the added sections has been removed:"
+    print("\nInformation on every section after one of the added sections has been removed:")
     print_section_info(pe)
     
     pe.OPTIONAL_HEADER.AddressOfEntryPoint = pe.sections[-1].VirtualAddress
